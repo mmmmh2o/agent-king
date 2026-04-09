@@ -36,6 +36,7 @@ agent-king v${VERSION} — 全自动化 AI 开发调度平台
   --model <name>                 AI 模型 (默认 claude)
   --port <N>                     Web 面板端口 (默认 3456)
   --no-web                       不启动 Web 面板
+  --yes                          自动确认执行（跳过 Enter 等待）
   --help                         显示帮助
   --version                      显示版本
 
@@ -55,9 +56,10 @@ interface ParsedArgs {
   model: string;
   port: number;
   no_web: boolean;
+  yes: boolean;
 }
 
-/** 解析命令行参数 */
+/** 解析命令行参数 — 先提取 flags，剩余部分做 idea */
 function parse_args(args: string[]): ParsedArgs {
   const result: ParsedArgs = {
     command: "",
@@ -67,22 +69,30 @@ function parse_args(args: string[]): ParsedArgs {
     model: "claude",
     port: 3456,
     no_web: false,
+    yes: false,
   };
 
+  // 第一轮：提取所有 flags
+  const positional: string[] = [];
   let i = 0;
   while (i < args.length) {
     const arg = args[i];
     if (arg === "--help" || arg === "-h") { print_help(); process.exit(0); }
     if (arg === "--version" || arg === "-v") { console.log(`agent-king v${VERSION}`); process.exit(0); }
     if (arg === "--no-web") { result.no_web = true; }
+    else if (arg === "--yes") { result.yes = true; }
     else if (arg === "--workers") { result.workers = parseInt(args[++i], 10); }
     else if (arg === "--dir") { result.dir = resolve(args[++i]); }
     else if (arg === "--model") { result.model = args[++i]; }
     else if (arg === "--port") { result.port = parseInt(args[++i], 10); }
-    else if (!result.command) { result.command = arg; }
-    else if (!result.idea) { result.idea = args.slice(i).join(" "); break; }
+    else { positional.push(arg); }
     i++;
   }
+
+  // 第二轮：从 positional 取 command 和 idea
+  if (positional.length > 0) result.command = positional[0];
+  if (positional.length > 1) result.idea = positional.slice(1).join(" ");
+
   return result;
 }
 
@@ -136,15 +146,19 @@ async function cmd_run(opts: ParsedArgs): Promise<void> {
     console.log(`  ${pri} ${t.id}: ${t.title}${dep}`);
   }
 
-  // 2. 等待用户确认
-  console.log("\n按 Enter 开始执行，Ctrl+C 取消...");
-  await new Promise<void>((resolve) => {
-    process.stdin.resume();
-    process.stdin.once("data", () => {
-      process.stdin.pause();
-      resolve();
+  // 2. 等待用户确认（--yes 跳过）
+  if (opts.yes) {
+    console.log("\n⚡ 自动开始 (--yes)");
+  } else {
+    console.log("\n按 Enter 开始执行，Ctrl+C 取消...");
+    await new Promise<void>((resolve) => {
+      process.stdin.resume();
+      process.stdin.once("data", () => {
+        process.stdin.pause();
+        resolve();
+      });
     });
-  });
+  }
 
   // 3. 启动所有服务
   start_services(opts, opts.idea);

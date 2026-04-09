@@ -1,13 +1,10 @@
-import { execSync } from "child_process";
-
 export interface LLMResponse {
   content: string;
   usage?: { input_tokens: number; output_tokens: number };
 }
 
 /**
- * 调用 OpenAI 兼容 API
- * 支持 OpenAI / DeepSeek / 任何 OpenAI 兼容服务
+ * 调用 OpenAI 兼容 API (async fetch, 非阻塞)
  */
 export async function call_llm(
   prompt: string,
@@ -33,25 +30,31 @@ export async function call_llm(
     max_tokens: opts?.max_tokens ?? 4096,
   });
 
-  const curlCmd = `curl -s -X POST ${baseUrl}/chat/completions \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer ${apiKey}" \
-    -d '${body.replace(/'/g, "'\\''")}'`;
+  const url = `${baseUrl}/chat/completions`;
 
-  try {
-    const raw = execSync(curlCmd, { encoding: "utf-8", timeout: 120_000 });
-    const parsed = JSON.parse(raw);
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body,
+    signal: AbortSignal.timeout(120_000),
+  });
 
-    if (parsed.error) {
-      throw new Error(`LLM API 错误: ${parsed.error.message || JSON.stringify(parsed.error)}`);
-    }
-
-    return {
-      content: parsed.choices?.[0]?.message?.content || "",
-      usage: parsed.usage,
-    };
-  } catch (e) {
-    if ((e as Error).message.includes("LLM API 错误")) throw e;
-    throw new Error(`LLM 调用失败: ${(e as Error).message}`);
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`LLM API HTTP ${resp.status}: ${text.slice(0, 300)}`);
   }
+
+  const parsed = await resp.json() as any;
+
+  if (parsed.error) {
+    throw new Error(`LLM API 错误: ${parsed.error.message || JSON.stringify(parsed.error)}`);
+  }
+
+  return {
+    content: parsed.choices?.[0]?.message?.content || "",
+    usage: parsed.usage,
+  };
 }

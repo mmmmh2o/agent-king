@@ -7,6 +7,7 @@ import {
   stop_worker,
   update_worker,
   get_worker_output,
+  is_worker_idle,
 } from "./worker.js";
 import { start_monitor, stop_monitor } from "./monitor.js";
 import { create_worktree, cleanup_all } from "../lib/worktree.js";
@@ -163,34 +164,28 @@ function are_dependencies_met(task: Task, all_tasks: Task[]): boolean {
   });
 }
 
-/** 检查完成状态 */
+/** 检查完成状态 — 使用空闲检测替代硬编码关键字 */
 function check_completions(tasks: Task[], workers: WorkerConfig[]): void {
   for (const worker of workers) {
     if (worker.status !== "busy" || !worker.current_task) continue;
 
     const output = get_worker_output(worker, 30);
+    const task = tasks.find((t) => t.id === worker.current_task);
+    if (!task) continue;
 
-    // 检测完成标记
-    const done_markers = ["DONE", "Task completed", "任务完成", "已完成", "All tests pass"];
-    const is_done = done_markers.some((m) => output.includes(m));
-
-    if (is_done) {
-      const task = tasks.find((t) => t.id === worker.current_task);
-      if (task) {
-        complete_task(worker, task);
-      }
+    // 使用 is_worker_idle 检测完成（scheduler 里用单次检测，monitor 用连续检测）
+    if (is_worker_idle(worker)) {
+      complete_task(worker, task);
       continue;
     }
 
     // 检测明显错误
-    const error_markers = ["FATAL", "CRITICAL", "panic:", "Segmentation fault"];
-    const has_error = error_markers.some((m) => output.includes(m));
+    const error_markers = ["FATAL", "CRITICAL", "panic:", "Segmentation fault", "command not found"];
+    const last_lines = output.split("\n").slice(-10).join("\n");
+    const has_error = error_markers.some((m) => last_lines.includes(m));
 
     if (has_error) {
-      const task = tasks.find((t) => t.id === worker.current_task);
-      if (task) {
-        fail_task(worker, task, "检测到致命错误");
-      }
+      fail_task(worker, task, "检测到致命错误");
     }
   }
 }
