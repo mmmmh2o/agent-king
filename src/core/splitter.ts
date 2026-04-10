@@ -74,7 +74,7 @@ export async function split_tasks(idea: string, project_context?: string): Promi
 
   const response = await call_llm(prompt, SPLITTER_SYSTEM, {
     temperature: 0.2,
-    max_tokens: 4096,
+    max_tokens: 8192,
   });
 
   const task_inputs = parse_tasks_response(response.content);

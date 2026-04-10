@@ -72,6 +72,7 @@ function parse_args(args: string[]): ParsedArgs {
     no_web: false,
   };
 
+  const non_flag_args: string[] = [];
   let i = 0;
   while (i < args.length) {
     const arg = args[i];
@@ -82,10 +83,12 @@ function parse_args(args: string[]): ParsedArgs {
     else if (arg === "--dir") { result.dir = resolve(args[++i]); }
     else if (arg === "--model") { result.model = args[++i]; }
     else if (arg === "--port") { result.port = parseInt(args[++i], 10); }
-    else if (!result.command) { result.command = arg; }
-    else if (!result.idea) { result.idea = args.slice(i).join(" "); break; }
+    else if (arg.startsWith("--")) { /* skip unknown flags */ }
+    else { non_flag_args.push(arg); }
     i++;
   }
+  if (non_flag_args.length > 0) result.command = non_flag_args[0];
+  if (non_flag_args.length > 1) result.idea = non_flag_args.slice(1).join(" ");
   return result;
 }
 
