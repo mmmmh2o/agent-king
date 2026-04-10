@@ -1,4 +1,5 @@
 import { write_json, read_json, append_jsonl } from "../lib/store.js";
+import { get_config } from "../lib/config.js";
 import { execute_task, type CodeResult } from "../lib/coder.js";
 import { update_task } from "./splitter.js";
 import { alert_error, alert_warn, alert_info } from "../lib/alert.js";
@@ -12,13 +13,16 @@ const DEFAULT_WORKERS_FILE = "workers.json";
 const running_tasks = new Map<string, Promise<CodeResult>>();
 
 /** 创建默认 worker 配置 */
-export function create_worker_config(count: number = 3): WorkerConfig[] {
+export function create_worker_config(count?: number): WorkerConfig[] {
+  const config = get_config();
+  const n = count ?? config.worker?.count ?? 3;
+  const model = config.worker?.model || "mimo";
   const workers: WorkerConfig[] = [];
-  for (let i = 1; i <= count; i++) {
+  for (let i = 1; i <= n; i++) {
     workers.push({
       id: `worker-${i}`,
       max_concurrent: 1,
-      model: "mimo",
+      model,
       tmux_session: "",
       status: "idle",
       current_task: null,

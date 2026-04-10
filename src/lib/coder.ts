@@ -1,5 +1,5 @@
+import { join, dirname, resolve } from "path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from "fs";
-import { join, dirname } from "path";
 import { execSync } from "child_process";
 import { call_llm } from "./llm.js";
 import { alert_info, alert_warn, alert_error } from "./alert.js";
@@ -115,12 +115,27 @@ function parse_coder_response(content: string): { files: Record<string, string>;
 
 /**
  * 写入文件到项目目录
+ * 安全校验: 拒绝路径穿越
  */
 function write_files(project_dir: string, files: Record<string, string>): string[] {
   const written: string[] = [];
+  const resolved_base = resolve(project_dir);
 
   for (const [rel_path, content] of Object.entries(files)) {
+    // 安全校验: 禁止绝对路径和路径穿越
+    if (rel_path.startsWith("/") || rel_path.startsWith("\\") || rel_path.includes("..")) {
+      alert_warn(`拒绝写入危险路径: ${rel_path}`);
+      continue;
+    }
+
     const full_path = join(project_dir, rel_path);
+    const resolved_path = resolve(full_path);
+
+    // 确保最终路径在项目目录内
+    if (!resolved_path.startsWith(resolved_base + "/") && resolved_path !== resolved_base) {
+      alert_warn(`拒绝写入目录外路径: ${rel_path} -> ${resolved_path}`);
+      continue;
+    }
 
     // 确保目录存在
     const dir = dirname(full_path);
