@@ -1,4 +1,4 @@
-export type HookEventType = "pre_tool_use" | "post_tool_use" | "stop" | "notification" | "start" | "error";
+export type HookEventType = "pre_tool_use" | "post_tool_use" | "stop" | "notification" | "start" | "error" | "done";
 
 export interface HookEvent {
   task_id: string;

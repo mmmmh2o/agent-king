@@ -1,4 +1,5 @@
 import { execSync } from "child_process";
+import { get_config } from "./config.js";
 
 export interface LLMResponse {
   content: string;
@@ -8,18 +9,22 @@ export interface LLMResponse {
 /**
  * 调用 OpenAI 兼容 API
  * 支持 OpenAI / DeepSeek / 任何 OpenAI 兼容服务
+ * 配置来源: agent-king.json > 环境变量 > 默认值
  */
 export async function call_llm(
   prompt: string,
   system?: string,
   opts?: { model?: string; temperature?: number; max_tokens?: number }
 ): Promise<LLMResponse> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  const baseUrl = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
-  const model = opts?.model || process.env.LLM_MODEL || "gpt-4o-mini";
+  const config = get_config();
+  const apiKey = config.llm.api_key;
+  const baseUrl = config.llm.base_url;
+  const model = opts?.model || config.llm.model;
 
   if (!apiKey) {
-    throw new Error("OPENAI_API_KEY 未设置");
+    throw new Error(
+      "LLM API Key 未配置。请在 agent-king.json 中设置 llm.api_key，或设置 OPENAI_API_KEY 环境变量。"
+    );
   }
 
   const messages: Array<{ role: string; content: string }> = [];

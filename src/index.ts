@@ -13,6 +13,7 @@ import {
   stop_checkpoint_saver,
 } from "./lib/checkpoint.js";
 import { alert_info, alert_error } from "./lib/alert.js";
+import { show_config_source, get_config } from "./lib/config.js";
 
 const VERSION = "0.1.1";
 
@@ -28,6 +29,7 @@ agent-king v${VERSION} — 全自动化 AI 开发调度平台
   agent-king split "你的想法"     只拆分任务，不执行
   agent-king status              查看当前任务状态
   agent-king report              打印一次进度报告
+  agent-king config              显示当前配置
   agent-king stop                停止所有 Worker
 
 选项:
@@ -59,13 +61,14 @@ interface ParsedArgs {
 
 /** 解析命令行参数 */
 function parse_args(args: string[]): ParsedArgs {
+  const config = get_config();
   const result: ParsedArgs = {
     command: "",
     idea: "",
-    workers: 3,
-    dir: process.cwd(),
-    model: "claude",
-    port: 3456,
+    workers: config.worker?.count ?? 3,
+    dir: config.project_dir || process.cwd(),
+    model: config.worker?.model || "claude",
+    port: config.server?.port ?? 3456,
     no_web: false,
   };
 
@@ -101,6 +104,19 @@ function stop_all(): void {
   stop_reporter();
   stop_scheduler();
   stop_server();
+}
+
+/** config 命令 */
+function cmd_config(): void {
+  const config = get_config();
+  show_config_source();
+  console.log("\n当前配置:");
+  console.log(`  LLM API:     ${config.llm.base_url}`);
+  console.log(`  LLM Model:   ${config.llm.model}`);
+  console.log(`  API Key:     ${config.llm.api_key ? "***" + config.llm.api_key.slice(-4) : "❌ 未设置"}`);
+  console.log(`  Worker Model: ${config.worker?.model || "claude"}`);
+  console.log(`  Worker Count: ${config.worker?.count || 3}`);
+  console.log(`  Server Port:  ${config.server?.port || 3456}`);
 }
 
 /** run 命令: 一句话启动 */
@@ -273,6 +289,7 @@ async function main(): Promise<void> {
     case "report": cmd_report(); break;
     case "stop":   cmd_stop(); break;
     case "serve":  cmd_serve(opts.port); break;
+    case "config": cmd_config(); break;
     default:
       console.error(`未知命令: ${opts.command}`);
       print_help();

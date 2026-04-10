@@ -1,13 +1,15 @@
-import { join } from "path";
-import * as tmux from "../lib/tmux.js";
-import { read_json, write_json, append_jsonl } from "../lib/store.js";
+import { write_json, read_json, append_jsonl } from "../lib/store.js";
+import { execute_task, type CodeResult } from "../lib/coder.js";
 import { update_task } from "./splitter.js";
 import { alert_error, alert_warn, alert_info } from "../lib/alert.js";
 import type { Task } from "../types/task.js";
-import type { WorkerConfig, WorkerStatus } from "../types/worker.js";
+import type { WorkerConfig } from "../types/worker.js";
 import type { HookEvent } from "../types/event.js";
 
 const DEFAULT_WORKERS_FILE = "workers.json";
+
+// 正在执行的任务 promise 跟踪
+const running_tasks = new Map<string, Promise<CodeResult>>();
 
 /** 创建默认 worker 配置 */
 export function create_worker_config(count: number = 3): WorkerConfig[] {
@@ -16,8 +18,8 @@ export function create_worker_config(count: number = 3): WorkerConfig[] {
     workers.push({
       id: `worker-${i}`,
       max_concurrent: 1,
-      model: process.env.WORKER_MODEL || "claude",
-      tmux_session: `agent-king-w${i}`,
+      model: "mimo",
+      tmux_session: "",
       status: "idle",
       current_task: null,
       started_at: null,
@@ -48,40 +50,21 @@ export function update_worker(worker_id: string, updates: Partial<WorkerConfig>)
   save_workers(workers);
 }
 
-/** 启动一个 worker（创建 tmux session + 启动 Claude Code） */
+/** 启动 worker（标记为就绪） */
 export function start_worker(worker: WorkerConfig, project_dir: string): boolean {
-  try {
-    if (tmux.has_session(worker.tmux_session)) {
-      tmux.kill_session(worker.tmux_session);
-    }
-    tmux.new_session(worker.tmux_session, project_dir);
-
-    // 等一小会儿让 session 就绪
-    // 启动 Claude Code (或 OpenCode)
-    const cli_cmd = worker.model === "opencode" ? "opencode" : "claude";
-    tmux.send_keys(worker.tmux_session, cli_cmd);
-
-    update_worker(worker.id, {
-      status: "idle",
-      started_at: new Date().toISOString(),
-      last_heartbeat: new Date().toISOString(),
-    });
-
-    alert_info(`Worker ${worker.id} 已启动 (session: ${worker.tmux_session})`);
-    return true;
-  } catch (e) {
-    alert_error(`Worker ${worker.id} 启动失败`, { error: (e as Error).message });
-    update_worker(worker.id, { status: "error" });
-    return false;
-  }
+  update_worker(worker.id, {
+    status: "idle",
+    started_at: new Date().toISOString(),
+    last_heartbeat: new Date().toISOString(),
+  });
+  alert_info(`Worker ${worker.id} 已就绪`);
+  return true;
 }
 
-/** 给 worker 分配任务 */
-export function assign_task(worker: WorkerConfig, task: Task): boolean {
+/** 给 worker 分配任务（异步执行） */
+export function assign_task(worker: WorkerConfig, task: Task, project_dir: string): boolean {
   try {
-    const prompt = build_task_prompt(task);
-    tmux.send_keys(worker.tmux_session, prompt);
-
+    // 更新状态
     update_worker(worker.id, {
       status: "busy",
       current_task: task.id,
@@ -104,6 +87,25 @@ export function assign_task(worker: WorkerConfig, task: Task): boolean {
     append_jsonl("events.jsonl", event);
 
     alert_info(`任务 ${task.id} 已分配给 ${worker.id}: ${task.title}`);
+
+    // 异步执行
+    const promise = execute_task(task.title, task.description, project_dir);
+    running_tasks.set(worker.id, promise);
+
+    promise
+      .then((result) => {
+        running_tasks.delete(worker.id);
+        if (result.success) {
+          complete_task(worker, task, result);
+        } else {
+          fail_task(worker, task, result.error || "Coder 返回失败");
+        }
+      })
+      .catch((e) => {
+        running_tasks.delete(worker.id);
+        fail_task(worker, task, `执行异常: ${(e as Error).message}`);
+      });
+
     return true;
   } catch (e) {
     alert_error(`分配任务失败: ${task.id} → ${worker.id}`, { error: (e as Error).message });
@@ -111,41 +113,82 @@ export function assign_task(worker: WorkerConfig, task: Task): boolean {
   }
 }
 
+/** 检查 worker 是否忙（有正在执行的 promise） */
+export function is_worker_busy(worker_id: string): boolean {
+  return running_tasks.has(worker_id);
+}
+
+/** 检查 worker 是否空闲且任务已完成 */
+export function check_worker_completion(worker: WorkerConfig): "busy" | "idle" {
+  if (worker.status !== "busy") return "idle";
+  if (running_tasks.has(worker.id)) return "busy";
+  // promise 已完成但状态未更新 — 不应该到这里
+  return "idle";
+}
+
+/** 标记任务完成 */
+function complete_task(worker: WorkerConfig, task: Task, result: CodeResult): void {
+  update_task(task.id, {
+    status: "done",
+    completed_at: new Date().toISOString(),
+  });
+  update_worker(worker.id, {
+    status: "idle",
+    current_task: null,
+    last_heartbeat: new Date().toISOString(),
+  });
+
+  const event: HookEvent = {
+    task_id: task.id,
+    worker_id: worker.id,
+    event: "done",
+    timestamp: new Date().toISOString(),
+    data: { files: result.files_written },
+  };
+  append_jsonl("events.jsonl", event);
+
+  alert_info(`✅ 任务 ${task.id} 完成: ${task.title} (${result.files_written.length} 文件)`);
+}
+
+/** 标记任务失败，自动重试 */
+function fail_task(worker: WorkerConfig, task: Task, reason: string): void {
+  update_worker(worker.id, {
+    status: "idle",
+    current_task: null,
+    last_heartbeat: new Date().toISOString(),
+  });
+
+  const event: HookEvent = {
+    task_id: task.id,
+    worker_id: worker.id,
+    event: "error",
+    timestamp: new Date().toISOString(),
+    data: { error: reason },
+  };
+  append_jsonl("events.jsonl", event);
+
+  if (task.retry_count < task.max_retries) {
+    update_task(task.id, {
+      status: "todo",
+      assigned_worker: null,
+      error_count: task.error_count + 1,
+      last_error: reason,
+      retry_count: task.retry_count + 1,
+    });
+    alert_warn(`任务 ${task.id} 失败 (${reason})，自动重试 ${task.retry_count + 1}/${task.max_retries}`);
+  } else {
+    update_task(task.id, {
+      status: "error",
+      error_count: task.error_count + 1,
+      last_error: reason,
+    });
+    alert_error(`❌ 任务 ${task.id} 最终失败: ${task.title} — ${reason}`);
+  }
+}
+
 /** 停止 worker */
 export function stop_worker(worker: WorkerConfig): void {
-  try {
-    if (tmux.has_session(worker.tmux_session)) {
-      tmux.send_keys(worker.tmux_session, "C-c", false);
-      setTimeout(() => tmux.kill_session(worker.tmux_session), 1000);
-    }
-    update_worker(worker.id, { status: "stopped", current_task: null });
-    alert_info(`Worker ${worker.id} 已停止`);
-  } catch (e) {
-    alert_warn(`停止 Worker ${worker.id} 时出错`, { error: (e as Error).message });
-  }
-}
-
-/** 构建任务 prompt */
-function build_task_prompt(task: Task): string {
-  const parts = [
-    `任务: ${task.title}`,
-    `描述: ${task.description}`,
-    "",
-    "要求:",
-    "- 完成后运行 git add -A && git commit -m 'task: <描述>'",
-    "- 如果遇到错误，尝试修复后再继续",
-    "- 完成后输出 DONE",
-  ];
-
-  if (task.dependencies.length > 0) {
-    parts.splice(2, 0, `依赖: ${task.dependencies.join(", ")}（这些任务已完成）`);
-  }
-
-  return parts.join("\n");
-}
-
-/** 获取 worker 的终端输出 */
-export function get_worker_output(worker: WorkerConfig, lines?: number): string {
-  if (!tmux.has_session(worker.tmux_session)) return "";
-  return tmux.capture_pane(worker.tmux_session, lines);
+  running_tasks.delete(worker.id);
+  update_worker(worker.id, { status: "stopped", current_task: null });
+  alert_info(`Worker ${worker.id} 已停止`);
 }

@@ -3,3 +3,5 @@ dist/
 data/
 *.log
 .env
+agent-king.json
+.agent-king.json

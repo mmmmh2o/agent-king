@@ -1,0 +1,14 @@
+{
+  "llm": {
+    "api_key": "sk-xxxxxxxxxxxx",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini"
+  },
+  "worker": {
+    "model": "claude",
+    "count": 3
+  },
+  "server": {
+    "port": 3456
+  }
+}

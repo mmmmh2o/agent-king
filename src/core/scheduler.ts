@@ -6,7 +6,7 @@ import {
   assign_task,
   stop_worker,
   update_worker,
-  get_worker_output,
+  check_worker_completion,
 } from "./worker.js";
 import { start_monitor, stop_monitor } from "./monitor.js";
 import { create_worktree, cleanup_all } from "../lib/worktree.js";
@@ -125,15 +125,15 @@ function schedule_cycle(): void {
     const task = pick_next_task(todo_tasks, tasks);
     if (!task) break;
 
-    const success = assign_task(worker, task);
+    // worktree 路径
+    const wt_path = `${project_dir_global}/worktrees/${worker.id}`;
+
+    const success = assign_task(worker, task, wt_path);
     if (success) {
       const idx = todo_tasks.findIndex((t) => t.id === task.id);
       if (idx >= 0) todo_tasks.splice(idx, 1);
     }
   }
-
-  // 检查 doing 状态的任务是否实际已完成
-  check_completions(tasks, workers);
 
   // 推送 WebSocket 更新
   push_progress_update();
@@ -161,71 +161,6 @@ function are_dependencies_met(task: Task, all_tasks: Task[]): boolean {
     const dep = all_tasks.find((t) => t.id === dep_id);
     return dep?.status === "done";
   });
-}
-
-/** 检查完成状态 */
-function check_completions(tasks: Task[], workers: WorkerConfig[]): void {
-  for (const worker of workers) {
-    if (worker.status !== "busy" || !worker.current_task) continue;
-
-    const output = get_worker_output(worker, 30);
-
-    // 检测完成标记
-    const done_markers = ["DONE", "Task completed", "任务完成", "已完成", "All tests pass"];
-    const is_done = done_markers.some((m) => output.includes(m));
-
-    if (is_done) {
-      const task = tasks.find((t) => t.id === worker.current_task);
-      if (task) {
-        complete_task(worker, task);
-      }
-      continue;
-    }
-
-    // 检测明显错误
-    const error_markers = ["FATAL", "CRITICAL", "panic:", "Segmentation fault"];
-    const has_error = error_markers.some((m) => output.includes(m));
-
-    if (has_error) {
-      const task = tasks.find((t) => t.id === worker.current_task);
-      if (task) {
-        fail_task(worker, task, "检测到致命错误");
-      }
-    }
-  }
-}
-
-/** 标记任务完成 */
-function complete_task(worker: WorkerConfig, task: Task): void {
-  update_task(task.id, {
-    status: "done",
-    completed_at: new Date().toISOString(),
-  });
-  update_worker(worker.id, { status: "idle", current_task: null });
-  alert_info(`✅ 任务 ${task.id} 完成: ${task.title}`);
-}
-
-/** 标记任务失败，自动重试 */
-function fail_task(worker: WorkerConfig, task: Task, reason: string): void {
-  update_worker(worker.id, { status: "idle", current_task: null });
-
-  if (task.retry_count < task.max_retries) {
-    update_task(task.id, {
-      status: "todo",
-      assigned_worker: null,
-      error_count: task.error_count + 1,
-      last_error: reason,
-      retry_count: task.retry_count + 1,
-    });
-    alert_warn(`任务 ${task.id} 失败 (${reason})，自动重试 ${task.retry_count + 1}/${task.max_retries}`);
-  } else {
-    update_task(task.id, {
-      status: "error",
-      error_count: task.error_count + 1,
-      last_error: reason,
-    });
-    alert_error(`❌ 任务 ${task.id} 最终失败: ${task.title} — ${reason}`);
-  }
 }
 
 /** 打印完成摘要 */
